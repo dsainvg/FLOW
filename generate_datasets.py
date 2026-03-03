@@ -110,7 +110,9 @@ if __name__ == "__main__":
     # Generate exactly 1,000 unique 4x4 grids into a single file
     generate_batch([4], "4x4_1000", total_puzzles=1000)
 
-    # Generate exactly 10,000 unique 9x9 grids into a single file
+    # Generate exactly 10,000 unique 9x9 grids into a single file.
+    # Warning: Synchronous generation of 10k 9x9 combinations guaranteed to be
+    # unique and 100% full grid will time out the LLM bash session (400s limit).
     generate_batch([9], "9x9_10000", total_puzzles=10000)
 
     print("All requested datasets successfully created and saved.")
