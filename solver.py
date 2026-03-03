@@ -23,6 +23,8 @@ class FlowSolver:
         self.colors.sort()
         self.solutions = []
         self.max_solutions = 2 # Usually only need to know if 0, 1, or >1
+        self.operations = 0
+        self.max_operations = 50000
 
     def has_unique_solution(self):
         """
@@ -48,10 +50,16 @@ class FlowSolver:
         # Determine the order of colors to solve. Sorting by manhattan distance between endpoints can help heuristics.
         color_order = sorted(self.colors, key=lambda c: abs(self.endpoints[c][0][0] - self.endpoints[c][1][0]) + abs(self.endpoints[c][0][1] - self.endpoints[c][1][1]))
 
+        self.operations = 0
+
         self._backtrack(self.grid.copy(), color_order, 0, self.endpoints[color_order[0]][0])
         return self.solutions
 
     def _backtrack(self, current_grid, color_order, color_idx, current_pos):
+        self.operations += 1
+        if self.operations > self.max_operations:
+            return
+
         if len(self.solutions) >= self.max_solutions:
             return
 

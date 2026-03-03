@@ -51,7 +51,8 @@ def generate_batch(sizes, name, total_puzzles=5):
         # Determine how many tasks we need in this batch to hit the goal
         remaining = total_puzzles - len(all_puzzles)
         # Generate in chunks to utilize multiprocessing without overwhelming memory
-        chunk_size = min(remaining, 1000)
+        # Much smaller chunks to see progressive updates
+        chunk_size = min(remaining, 100)
 
         tasks = []
         for _ in range(chunk_size):
@@ -66,6 +67,7 @@ def generate_batch(sizes, name, total_puzzles=5):
         pool.close()
         pool.join()
 
+        added = 0
         for p, s, m in results:
             if p is None or m['difficulty_score'] == 0:
                 continue
@@ -77,11 +79,13 @@ def generate_batch(sizes, name, total_puzzles=5):
                 all_puzzles.append(p)
                 all_solutions.append(s)
                 all_metadata.append(m)
+                added += 1
 
             if len(all_puzzles) >= total_puzzles:
                 break
 
-        print(f"Progress: {len(all_puzzles)} / {total_puzzles} unique puzzles generated...")
+        if added > 0:
+            print(f"Progress: {len(all_puzzles)} / {total_puzzles} unique puzzles generated...")
 
     # Save to a SINGLE npz file
     padded_puzzles = np.zeros((len(all_puzzles), max_size, max_size), dtype=int)
