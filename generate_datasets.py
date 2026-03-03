@@ -45,51 +45,65 @@ def generate_batch(sizes, name, num_puzzles_per_size=5):
             num_colors = np.random.randint(min_colors, max_colors + 1)
             tasks.append((size, num_colors))
 
-    # Sequential generation is safer if generator is stuck on large grids
-    # For large datasets, using multiprocessing Pool is much faster
-    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-    results = pool.map(generate_single_puzzle, tasks)
-    pool.close()
-    pool.join()
+    print(f"Starting generation for {len(tasks)} puzzles...")
 
-    for p, s, m in results:
-        # Ignore dummy fallback puzzles (difficulty 0)
-        if m['difficulty_score'] > 0:
-            all_puzzles.append(p)
-            all_solutions.append(s)
-            all_metadata.append(m)
-
-    if not all_puzzles:
-        print(f"No valid puzzles generated for batch {name}. Skipping save.")
-        return
-
-    max_size = max(sizes)
-    padded_puzzles = np.zeros((len(all_puzzles), max_size, max_size), dtype=int)
-    padded_solutions = np.zeros((len(all_solutions), max_size, max_size), dtype=int)
-
-    for i, (p, s) in enumerate(zip(all_puzzles, all_solutions)):
-        curr_size = p.shape[0]
-        padded_puzzles[i, :curr_size, :curr_size] = p
-        padded_solutions[i, :curr_size, :curr_size] = s
+    # We will process in chunks of 500 to save memory and ensure partial results are saved
+    chunk_size = 500
+    total_valid = 0
 
     os.makedirs('outputs', exist_ok=True)
-    out_file = f'outputs/flow_{name}.npz'
-    np.savez_compressed(
-        out_file,
-        puzzles=padded_puzzles,
-        solutions=padded_solutions,
-        metadata=np.array(all_metadata, dtype=object)
-    )
-    print(f"Saved batch {name} to {out_file} with {len(all_puzzles)} puzzles.")
+
+    for i in range(0, len(tasks), chunk_size):
+        chunk_tasks = tasks[i:i + chunk_size]
+
+        # Parallel generation for speed
+        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+        results = pool.map(generate_single_puzzle, chunk_tasks)
+        pool.close()
+        pool.join()
+
+        chunk_puzzles = []
+        chunk_solutions = []
+        chunk_metadata = []
+
+        for p, s, m in results:
+            if m['difficulty_score'] > 0:
+                chunk_puzzles.append(p)
+                chunk_solutions.append(s)
+                chunk_metadata.append(m)
+
+        if chunk_puzzles:
+            max_size = max(sizes)
+            padded_puzzles = np.zeros((len(chunk_puzzles), max_size, max_size), dtype=int)
+            padded_solutions = np.zeros((len(chunk_solutions), max_size, max_size), dtype=int)
+
+            for j, (p, s) in enumerate(zip(chunk_puzzles, chunk_solutions)):
+                curr_size = p.shape[0]
+                padded_puzzles[j, :curr_size, :curr_size] = p
+                padded_solutions[j, :curr_size, :curr_size] = s
+
+            out_file = f'outputs/flow_{name}_part{(i//chunk_size)+1}.npz'
+            np.savez_compressed(
+                out_file,
+                puzzles=padded_puzzles,
+                solutions=padded_solutions,
+                metadata=np.array(chunk_metadata, dtype=object)
+            )
+            total_valid += len(chunk_puzzles)
+            print(f"Saved chunk {(i//chunk_size)+1} to {out_file} with {len(chunk_puzzles)} valid puzzles.")
+
+    print(f"Finished {name}: Total valid puzzles saved = {total_valid}")
 
 if __name__ == "__main__":
-    print("Starting Massive Dataset Generation...")
-    # Generate 1000 puzzles for small sizes to test the massive generation framework
-    # Note: 10,000 per size would take many hours. Doing 1,000 to demonstrate
-    # it can reliably output large `.npz` files and use multiprocessing.
-    generate_batch([5, 6, 7], "small_massive", num_puzzles_per_size=1000)
+    print("Starting Target Dataset Generation: 4x4 (1,000) and 9x9 (10,000)...")
 
-    # Medium sizes (8x8 to 10x10)
-    generate_batch([8, 9, 10], "medium_massive", num_puzzles_per_size=500)
+    # Generate 1,000 4x4 grids
+    generate_batch([4], "4x4", num_puzzles_per_size=1000)
 
-    print("All massive batches generated.")
+    # Generate 10,000 9x9 grids
+    # 9x9 grids are computationally heavy (NP-Complete solver checks)
+    # The timeout mechanism (60s) ensures we skip impossible ones, but getting 10,000
+    # will take quite a long time. The chunking mechanism ensures we save every 500.
+    generate_batch([9], "9x9", num_puzzles_per_size=10000)
+
+    print("Requested dataset generation queued and saving progressively.")
