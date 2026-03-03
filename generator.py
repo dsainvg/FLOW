@@ -240,10 +240,10 @@ class FlowGenerator:
         """
         Generates a valid, unique puzzle and its solution.
         """
-        # For larger datasets like 9x9, solver verification might be the bottleneck.
-        # We'll put a timeout per attempt.
+        # We can run indefinitely now because Hamiltonian approach is O(V+E) and extremely fast
+        # But we still keep a safety net
         import time
-        max_time = 3
+        max_time = 0.5 # Super aggressive timeout so we churn through quickly and only grab easy-to-verify grids
         global_start = time.time()
 
         while time.time() - global_start < max_time:
@@ -254,11 +254,9 @@ class FlowGenerator:
             puzzle = self.extract_puzzle(solution_grid)
 
             # Verify uniqueness using the solver
-            # If the solver takes too long on a 9x9, it means the puzzle is inherently
-            # hard or has too many branches. The `FlowSolver` might be blocking.
-            # We'll use a very quick SAT/backtracking bounds
             solver = FlowSolver(puzzle)
-            # Limit backtracks internally to prevent freezing
+            # Only allow extremely fast checks so we don't hold the CPU on hard combinatorial boards
+            solver.max_operations = 500
             solver.max_solutions = 2
 
             # Try to solve it; uniqueness means len == 1
