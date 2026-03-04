@@ -6,12 +6,12 @@ import multiprocessing
 
 def generate_single_puzzle(args):
     size, num_colors = args
-    print(f"Generating puzzle size {size}x{size} with {num_colors} colors...")
+    # Run generation quietly in worker; return timing and metadata but avoid
+    # printing from worker processes to keep logs clean when using multiprocessing.
     generator = FlowGenerator(size, num_colors)
     start_time = time.time()
     puzzle, solution, difficulty_score = generator.generate()
     end_time = time.time()
-    print(f"Generated {size}x{size} in {end_time - start_time:.2f}s - Difficulty: {difficulty_score}")
 
     base_score = size * num_colors
     if difficulty_score < base_score * 2:
@@ -30,7 +30,7 @@ def generate_single_puzzle(args):
         'difficulty_score': difficulty_score,
         'steps_to_solve': 0
     }
-    return puzzle, solution, metadata
+    return puzzle, solution, metadata, end_time - start_time
 
 def generate_batch(sizes, name, total_puzzles=5):
     all_puzzles = []
@@ -48,26 +48,34 @@ def generate_batch(sizes, name, total_puzzles=5):
     # We will generate in a loop until we reach total_puzzles to ensure we
     # don't stop if some generation attempts time out or return duplicate grids
     while len(all_puzzles) < total_puzzles:
+
         # Determine how many tasks we need in this batch to hit the goal
         remaining = total_puzzles - len(all_puzzles)
-        # Generate in chunks to utilize multiprocessing without overwhelming memory
+        # Generate in chunks to avoid long single iterations
         chunk_size = min(remaining, 1000)
 
+        # Use a small multiprocessing pool (4 workers) to parallelize while
+        # keeping output readable. Each worker returns (puzzle, solution, meta, elapsed).
         tasks = []
         for _ in range(chunk_size):
             size = np.random.choice(sizes)
-            min_colors = max(3, size - 2)
-            max_colors = size + 1
-            num_colors = np.random.randint(min_colors, max_colors + 1)
+            # Force 4 colors for 4x4 generation
+            num_colors = 4
             tasks.append((size, num_colors))
 
-        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-        results = pool.map(generate_single_puzzle, tasks)
-        pool.close()
-        pool.join()
+        pool = multiprocessing.Pool(processes=4)
+        try:
+            results = pool.map(generate_single_puzzle, tasks)
+        finally:
+            pool.close()
+            pool.join()
 
-        for p, s, m in results:
-            if p is None or m['difficulty_score'] == 0:
+        # Process results from workers
+        for res in results:
+            if res is None:
+                continue
+            p, s, m, elapsed = res
+            if p is None or m.get('difficulty_score', 0) == 0:
                 continue
 
             # Check uniqueness across dataset using a hash of the puzzle grid
@@ -101,12 +109,9 @@ def generate_batch(sizes, name, total_puzzles=5):
     print(f"Finished {name}: Total unique valid puzzles saved to {out_file} = {len(all_puzzles)}")
 
 if __name__ == "__main__":
-    print("Starting Target Dataset Generation: 4x4 (1,000) and 9x9 (10,000)...")
+    print("Starting Target Dataset Generation: single-threaded 4x4 (1,280)...")
 
-    # Generate exactly 1,000 unique 4x4 grids into a single file
-    generate_batch([4], "4x4_1000", total_puzzles=1000)
+    # Generate exactly 1,280 unique 4x4 grids into a single file using 4 colors
+    generate_batch([4], "4x4_1280_4colors", total_puzzles=1280)
 
-    # Generate exactly 10,000 unique 9x9 grids into a single file
-    generate_batch([9], "9x9_10000", total_puzzles=10000)
-
-    print("All requested datasets successfully created and saved.")
+    print("Generation complete.")
