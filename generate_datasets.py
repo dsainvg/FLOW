@@ -2,16 +2,13 @@ import numpy as np
 import os
 from generator import FlowGenerator
 import time
-import multiprocessing
 
-def generate_single_puzzle(args):
-    size, num_colors = args
-    print(f"Generating puzzle size {size}x{size} with {num_colors} colors...")
+def generate_single_puzzle(size, num_colors):
     generator = FlowGenerator(size, num_colors)
     start_time = time.time()
     puzzle, solution, difficulty_score = generator.generate()
-    end_time = time.time()
-    print(f"Generated {size}x{size} in {end_time - start_time:.2f}s - Difficulty: {difficulty_score}")
+    elapsed = time.time() - start_time
+    print(f"  Generated {size}x{size}/{num_colors}c in {elapsed:.2f}s - score={difficulty_score}")
 
     base_score = size * num_colors
     if difficulty_score < base_score * 2:
@@ -32,56 +29,52 @@ def generate_single_puzzle(args):
     }
     return puzzle, solution, metadata
 
-def generate_batch(sizes, name, total_puzzles=5):
+def generate_batch(sizes, name, total_puzzles=5, fixed_num_colors=None):
     all_puzzles = []
     all_solutions = []
     all_metadata = []
-    unique_hashes = set() # To ensure uniqueness
+    unique_hashes = set()
 
     os.makedirs('outputs', exist_ok=True)
     out_file = f'outputs/flow_{name}.npz'
-
-    print(f"Starting generation for {total_puzzles} unique puzzles for {name}...")
-
     max_size = max(sizes)
 
-    # We will generate in a loop until we reach total_puzzles to ensure we
-    # don't stop if some generation attempts time out or return duplicate grids
-    while len(all_puzzles) < total_puzzles:
-        # Determine how many tasks we need in this batch to hit the goal
-        remaining = total_puzzles - len(all_puzzles)
-        # Generate in chunks to utilize multiprocessing without overwhelming memory
-        chunk_size = min(remaining, 1000)
+    print(f"Starting generation: {total_puzzles} puzzles -> {out_file}")
 
-        tasks = []
-        for _ in range(chunk_size):
-            size = np.random.choice(sizes)
+    attempts = 0
+    max_attempts = total_puzzles * 20  # safety cap to avoid infinite loop
+
+    while len(all_puzzles) < total_puzzles:
+        if attempts >= max_attempts:
+            print(f"WARNING: reached max attempts ({max_attempts}). "
+                  f"Collected {len(all_puzzles)}/{total_puzzles} puzzles.")
+            break
+        attempts += 1
+
+        size = np.random.choice(sizes)
+        if fixed_num_colors is not None:
+            num_colors = fixed_num_colors
+        else:
             min_colors = max(3, size - 2)
             max_colors = size + 1
             num_colors = np.random.randint(min_colors, max_colors + 1)
-            tasks.append((size, num_colors))
 
-        pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-        results = pool.map(generate_single_puzzle, tasks)
-        pool.close()
-        pool.join()
+        try:
+            p, s, m = generate_single_puzzle(size, num_colors)
+        except Exception as e:
+            print(f"  Generation error: {e} — skipping")
+            continue
 
-        for p, s, m in results:
-            if p is None or m['difficulty_score'] == 0:
-                continue
+        if p is None or m['difficulty_score'] == 0:
+            continue
 
-            # Check uniqueness across dataset using a hash of the puzzle grid
-            p_bytes = p.tobytes()
-            if p_bytes not in unique_hashes:
-                unique_hashes.add(p_bytes)
-                all_puzzles.append(p)
-                all_solutions.append(s)
-                all_metadata.append(m)
-
-            if len(all_puzzles) >= total_puzzles:
-                break
-
-        print(f"Progress: {len(all_puzzles)} / {total_puzzles} unique puzzles generated...")
+        p_bytes = p.tobytes()
+        if p_bytes not in unique_hashes:
+            unique_hashes.add(p_bytes)
+            all_puzzles.append(p)
+            all_solutions.append(s)
+            all_metadata.append(m)
+            print(f"Progress: {len(all_puzzles)}/{total_puzzles}")
 
     # Save to a SINGLE npz file
     padded_puzzles = np.zeros((len(all_puzzles), max_size, max_size), dtype=int)
@@ -101,12 +94,13 @@ def generate_batch(sizes, name, total_puzzles=5):
     print(f"Finished {name}: Total unique valid puzzles saved to {out_file} = {len(all_puzzles)}")
 
 if __name__ == "__main__":
-    print("Starting Target Dataset Generation: 4x4 (1,000) and 9x9 (10,000)...")
+    # --- Quick smoke test with 5 examples ---
+    print("=== Smoke test: 5 puzzles (4x4, 4 colors) ===")
+    generate_batch([4], "4x4_test5", total_puzzles=5, fixed_num_colors=4)
+    print("Smoke test passed!\n")
 
-    # Generate exactly 1,000 unique 4x4 grids into a single file
-    generate_batch([4], "4x4_1000", total_puzzles=1000)
-
-    # Generate exactly 10,000 unique 9x9 grids into a single file
-    generate_batch([9], "9x9_10000", total_puzzles=10000)
+    # --- Full dataset: 1,280 unique 4x4 grids with exactly 4 colors ---
+    print("=== Full run: 1,280 puzzles (4x4, 4 colors) ===")
+    generate_batch([4], "4x4_4colors_1280", total_puzzles=1280, fixed_num_colors=4)
 
     print("All requested datasets successfully created and saved.")

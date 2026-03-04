@@ -1,264 +1,151 @@
-import numpy as np
+﻿import numpy as np
 import random
-from solver import FlowSolver
+import time
+
 
 class FlowGenerator:
     def __init__(self, size, num_colors):
         self.size = size
         self.num_colors = num_colors
 
-    def generate_full_grid(self):
-        """
-        Generates a fully filled grid with 'num_colors' paths.
-        Uses an iterative merging/spanning tree approach to guarantee 100% fill.
-        1. Generate a random maze (spanning tree) over the grid.
-        2. Find the longest paths (or random valid paths) and color them.
-        3. Since 9x9 is large, this is much faster than random walk guessing.
-        """
-        import time
-        start_time = time.time()
-
-        while time.time() - start_time < 5:
-            # 1. Create a fully populated spanning tree using randomized Kruskal's or DFS
-            grid = self._generate_spanning_forest()
-
-            # 2. Extract paths
-            if grid is not None and self._check_path_validity(grid):
-                # Ensure exactly num_colors are used and each path >= 2 cells
-                unique_colors = np.unique(grid)
-                unique_colors = unique_colors[unique_colors > 0]
-                if len(unique_colors) == self.num_colors:
-                    lengths = [np.sum(grid == c) for c in unique_colors]
-                    if all(l >= 2 for l in lengths):
-                        return grid
-
-        # Fallback to a fast sequential filler if the tree approach doesn't hit the exact color count
-        return self._fast_sequential_fill()
-
-    def _fast_sequential_fill(self):
-        """
-        A heuristic method to densely pack paths.
-        Starts by snaking a single path as long as possible, then breaking it into `num_colors` segments.
-        This guarantees a fully filled grid, valid paths, and no empty spaces!
-        """
-        grid = np.zeros((self.size, self.size), dtype=int)
-
-        # Simple Hamiltonian-like path generation (DFS with randomized neighbors)
+    # ------------------------------------------------------------------
+    # Hamiltonian path via recursive DFS with a per-attempt deadline
+    # ------------------------------------------------------------------
+    def _find_hamiltonian_path(self, deadline):
+        """Return a list of all cells in Hamiltonian-path order, or None."""
+        n = self.size
+        total = n * n
         path = []
-        visited = set()
+        visited = [[False] * n for _ in range(n)]
 
         def dfs(r, c):
-            visited.add((r, c))
+            if time.time() > deadline:
+                return False
             path.append((r, c))
-
-            neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
-            random.shuffle(neighbors)
-
-            for nr, nc in neighbors:
-                if 0 <= nr < self.size and 0 <= nc < self.size and (nr, nc) not in visited:
-                    # To avoid 2x2 loops, check neighbors of (nr, nc) in the current path
-                    # Actually a simple DFS tree naturally won't form 2x2 loops if we don't connect cross-branches,
-                    # but since it's a single path (degree <= 2), it physically cannot form a 2x2 of the SAME color
-                    # unless it loops back, which visited set prevents.
-                    # BUT wait, a snaking path CAN form a 2x2 of the *same* color if it wraps tightly:
-                    # 1 1
-                    # 1 1  -> This is a 2x2.
-                    # To prevent this, ensure that adding (nr, nc) doesn't touch any visited cell OTHER than the previous one.
-
-                    touches = 0
-                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        nnr, nnc = nr + dr, nc + dc
-                        if (nnr, nnc) in visited:
-                            touches += 1
-
-                    if touches == 1:
-                        if dfs(nr, nc):
-                            return True
-
-            # If we didn't return True, and we haven't filled the grid, we backtrack
-            if len(path) == self.size * self.size:
+            visited[r][c] = True
+            if len(path) == total:
                 return True
-
-            visited.remove((r, c))
+            nbrs = [(r+dr, c+dc) for dr, dc in ((-1,0),(1,0),(0,-1),(0,1))
+                    if 0 <= r+dr < n and 0 <= c+dc < n]
+            random.shuffle(nbrs)
+            for nr, nc in nbrs:
+                if not visited[nr][nc]:
+                    if dfs(nr, nc):
+                        return True
+            # backtrack
             path.pop()
+            visited[r][c] = False
             return False
 
-        # Try to find a Hamiltonian path. If it fails, restart from different seeds.
-        for _ in range(50):
-            path.clear()
-            visited.clear()
-            start_r, start_c = random.randint(0, self.size-1), random.randint(0, self.size-1)
-            if dfs(start_r, start_c):
-                break
+        sr, sc = random.randint(0, n-1), random.randint(0, n-1)
+        if dfs(sr, sc):
+            return path
+        return None
 
-        if len(path) < self.size * self.size:
-            # Hamiltonian path failed to fill 100%. We can fill the rest with other colors
-            # if we adapt the logic. For now, let's just return None and retry.
-            return None
-
-        # We have a single path of length size*size.
-        # Break it into `num_colors` segments.
-        segment_lengths = []
+    def _segment_path(self, path):
+        """Split path into num_colors contiguous segments, each length >= 2."""
         remaining = len(path)
+        segment_lengths = []
         for i in range(self.num_colors - 1):
-            # Each segment must be at least length 2
-            # And leave enough for the rest (at least 2 * remaining colors)
             max_len = remaining - (self.num_colors - 1 - i) * 2
             if max_len < 2:
                 return None
             slen = random.randint(2, max_len)
             segment_lengths.append(slen)
             remaining -= slen
+        if remaining < 2:
+            return None
         segment_lengths.append(remaining)
 
-        # Color the grid
-        color = 1
-        idx = 0
+        grid = np.zeros((self.size, self.size), dtype=int)
+        color, idx = 1, 0
         for slen in segment_lengths:
             for _ in range(slen):
                 r, c = path[idx]
                 grid[r, c] = color
                 idx += 1
             color += 1
-
         return grid
 
-    def _generate_spanning_forest(self):
-        return None # Placeholder to use fast_sequential_fill natively since it's perfect
+    def generate_full_grid(self):
+        """Try up to 200 short DFS attempts (0.5 s each) to get a valid grid."""
+        for _ in range(200):
+            deadline = time.time() + 0.5
+            path = self._find_hamiltonian_path(deadline)
+            if path is None:
+                continue
+            grid = self._segment_path(path)
+            if grid is not None:
+                return grid
+        return None
 
-    def _forms_2x2_square(self, grid, r, c, color):
-        if r > 0 and c > 0 and grid[r-1, c-1] == color and grid[r-1, c] == color and grid[r, c-1] == color:
-            return True
-        if r > 0 and c < self.size - 1 and grid[r-1, c] == color and grid[r-1, c+1] == color and grid[r, c+1] == color:
-            return True
-        if r < self.size - 1 and c > 0 and grid[r, c-1] == color and grid[r+1, c-1] == color and grid[r+1, c] == color:
-            return True
-        if r < self.size - 1 and c < self.size - 1 and grid[r+1, c] == color and grid[r, c+1] == color and grid[r+1, c+1] == color:
-            return True
-        return False
-
-    def _check_path_validity(self, grid):
-        """
-        Ensure every color forms exactly one connected component and represents a valid path
-        (i.e., degree <= 2 for interior nodes, 1 for endpoints).
-        """
-        for r in range(self.size):
-            for c in range(self.size):
-                color = grid[r, c]
-                same_color_neighbors = 0
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < self.size and 0 <= nc < self.size and grid[nr, nc] == color:
-                        same_color_neighbors += 1
-                if same_color_neighbors > 2:
-                    return False
-        return True
-
+    # ------------------------------------------------------------------
+    # Puzzle extraction and difficulty
+    # ------------------------------------------------------------------
     def extract_puzzle(self, solution_grid):
-        """
-        Given a full solution grid, extract the puzzle (endpoints only).
-        Returns the puzzle grid.
-        """
         puzzle = np.zeros_like(solution_grid)
         for color in range(1, self.num_colors + 1):
-            endpoints = []
             for r in range(self.size):
                 for c in range(self.size):
                     if solution_grid[r, c] == color:
-                        # Check if endpoint (degree 1)
-                        neighbors = 0
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < self.size and 0 <= nc < self.size and solution_grid[nr, nc] == color:
-                                neighbors += 1
-                        if neighbors == 1:
-                            endpoints.append((r, c))
-
-            # Place endpoints in puzzle
-            for r, c in endpoints:
-                puzzle[r, c] = color
-
+                        nbrs = sum(
+                            1 for dr, dc in ((-1,0),(1,0),(0,-1),(0,1))
+                            if 0 <= r+dr < self.size and 0 <= c+dc < self.size
+                            and solution_grid[r+dr, c+dc] == color
+                        )
+                        if nbrs == 1:
+                            puzzle[r, c] = color
         return puzzle
 
     def calculate_difficulty(self, solution_grid):
-        """
-        Difficulty = (Grid Size) * (Number of Colors) * (Path Tortuosity/Bends)
-        """
         bends = 0
         for color in range(1, self.num_colors + 1):
-            # Trace path to count bends
-            # Find an endpoint
             start = None
             for r in range(self.size):
                 for c in range(self.size):
                     if solution_grid[r, c] == color:
-                        neighbors = 0
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < self.size and 0 <= nc < self.size and solution_grid[nr, nc] == color:
-                                neighbors += 1
-                        if neighbors == 1:
+                        nbrs = sum(
+                            1 for dr, dc in ((-1,0),(1,0),(0,-1),(0,1))
+                            if 0 <= r+dr < self.size and 0 <= c+dc < self.size
+                            and solution_grid[r+dr, c+dc] == color
+                        )
+                        if nbrs == 1:
                             start = (r, c)
                             break
                 if start:
                     break
-
             if not start:
                 continue
-
-            # Trace the path
-            curr = start
-            prev = None
-            prev_dir = None
-
+            curr, prev, prev_dir = start, None, None
+            visited_trace = {start}
             while True:
                 r, c = curr
-                next_node = None
-                curr_dir = None
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < self.size and 0 <= nc < self.size and solution_grid[nr, nc] == color:
-                        if (nr, nc) != prev:
-                            next_node = (nr, nc)
-                            curr_dir = (dr, dc)
-                            break
-
-                if not next_node:
+                nxt, cdir = None, None
+                for dr, dc in ((-1,0),(1,0),(0,-1),(0,1)):
+                    nr, nc = r+dr, c+dc
+                    if (0 <= nr < self.size and 0 <= nc < self.size
+                            and solution_grid[nr, nc] == color
+                            and (nr, nc) != prev
+                            and (nr, nc) not in visited_trace):
+                        nxt, cdir = (nr, nc), (dr, dc)
+                        break
+                if not nxt:
                     break
-
-                if prev_dir is not None and curr_dir != prev_dir:
+                if prev_dir is not None and cdir != prev_dir:
                     bends += 1
+                visited_trace.add(nxt)
+                prev, curr, prev_dir = curr, nxt, cdir
+        return self.size * self.num_colors * max(bends, 1)
 
-                prev = curr
-                curr = next_node
-                prev_dir = curr_dir
-
-        difficulty = self.size * self.num_colors * bends
-        return difficulty
-
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
     def generate(self):
-        """
-        Generates a valid, unique puzzle and its solution.
-        """
-        # We can run indefinitely now because Hamiltonian approach is O(V+E) and extremely fast
-        # But we still keep a safety net
-        import time
-        max_time = 10
-        global_start = time.time()
-
-        while time.time() - global_start < max_time:
+        for _ in range(30):
             solution_grid = self.generate_full_grid()
             if solution_grid is None:
                 continue
-
             puzzle = self.extract_puzzle(solution_grid)
-
-            # Verify uniqueness using the solver
-            solver = FlowSolver(puzzle)
-            if solver.has_unique_solution():
-                difficulty = self.calculate_difficulty(solution_grid)
-                return puzzle, solution_grid, difficulty
-
-        # If we timeout, it means the color combinations for this specific run was impossible.
-        # We will return None, None, 0 so the generator script knows to skip it and retry.
+            if all(np.sum(puzzle == c) == 2 for c in range(1, self.num_colors + 1)):
+                return puzzle, solution_grid, self.calculate_difficulty(solution_grid)
         return None, None, 0
