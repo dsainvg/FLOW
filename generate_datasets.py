@@ -27,7 +27,7 @@ def generate_single_puzzle(size, num_colors):
         'difficulty_score': difficulty_score,
         'steps_to_solve': 0
     }
-    return puzzle, solution, metadata, end_time - start_time
+    return puzzle, solution, metadata
 
 def generate_batch(sizes, name, total_puzzles=5, fixed_num_colors=None):
     all_puzzles = []
